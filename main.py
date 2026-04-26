@@ -1,20 +1,22 @@
 from workers.gpu_worker import GPUWorker
-from lb.load_balancer import LoadBalancer
 from master.scheduler import Scheduler
+from lb.load_balancer import LoadBalancer
 from client.load_generator import run_load_test
+
 
 def main():
     # Create GPU workers
-    workers = [GPUWorker(i) for i in range(4)] # simulate 4 GPUs
+    workers = [GPUWorker(i) for i in range(4)]  # simulate 4 GPUs
 
-    # Load Balancer
-    lb = LoadBalancer(workers)
+    # Master Scheduler controls task execution
+    scheduler = Scheduler(workers)
 
-    # Scheduler
-    scheduler = Scheduler(lb)
+    # Load Balancer receives client requests first
+    load_balancer = LoadBalancer(scheduler)
 
     # Run simulation
-    run_load_test(scheduler, num_users=1000)
+    run_load_test(load_balancer, num_users=1000)
+
 
 if __name__ == "__main__":
     main()

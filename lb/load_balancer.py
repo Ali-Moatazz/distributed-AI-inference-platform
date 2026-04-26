@@ -1,13 +1,9 @@
 class LoadBalancer:
-    def __init__(self, workers):
-        self.workers = workers
-        self.index = 0
+    def __init__(self, scheduler):
+        self.scheduler = scheduler
 
-    def get_next_worker(self):
-        worker = self.workers[self.index]
-        self.index = (self.index + 1) % len(self.workers)
-        return worker
+    def handle_request(self, request):
+        print(f"[Load Balancer] Received request {request.id}")
 
-    def dispatch(self, request):
-        worker = self.get_next_worker()
-        return worker.process(request)
+        # Forward request to Master Scheduler
+        return self.scheduler.handle_request(request)
