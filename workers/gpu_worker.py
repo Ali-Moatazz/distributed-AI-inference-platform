@@ -21,6 +21,7 @@ class GPUWorker:
 
         return {
             "id": request.id,
+            "worker_id": self.id,
             "result": result,
             "latency": latency
         }
