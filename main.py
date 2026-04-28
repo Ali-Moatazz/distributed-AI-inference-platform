@@ -1,32 +1,19 @@
 from lb.load_balancer import LoadBalancer
-from master.scheduler import Scheduler
+from master.scheduler import MasterNode
 from workers.gpu_worker import GPUWorker
-
-class Request:
-    def __init__(self, id, query):
-        self.id = id
-        self.query = query
+from client.load_generator import run_load_test
 
 
 def main():
 
-    # 1. Create workers (GPU cluster)
-    workers = [GPUWorker(i) for i in range(4)]
+    workers = {i: GPUWorker(i) for i in range(3)}
 
-    # 2. Create master scheduler
-    master = Scheduler(workers)
+    master = MasterNode(list(workers.keys()))
+    lb = LoadBalancer(master, workers)
 
-    # 3. Connect LB → Master (IMPORTANT: your LB already expects this)
-    lb = LoadBalancer(master)
+    master.set_load_balancer(lb)
 
-    # 4. Simulate requests
-    for i in range(10):
-        req = Request(i, f"Query {i}")
-
-        print("\n==============================")
-        response = lb.receive_request(req)
-
-        print(f"[CLIENT] Response: {response}")
+    run_load_test(lb, num_users=10)
 
 
 if __name__ == "__main__":
