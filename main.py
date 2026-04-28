@@ -1,33 +1,37 @@
+import threading
+import time
 from lb.load_balancer import LoadBalancer
 from master.scheduler import Scheduler
 from workers.gpu_worker import GPUWorker
+from common.models import Request
 
-class Request:
-    def __init__(self, id, query):
-        self.id = id
-        self.query = query
-
+def simulate_user(lb, user_id):
+    req = Request(id=user_id, query=f"Stress Test Query {user_id}")
+    lb.receive_request(req)
 
 def main():
-
-    # 1. Create workers (GPU cluster)
-    workers = [GPUWorker(i) for i in range(4)]
-
-    # 2. Create master scheduler
+    # 1. Setup workers in SIMULATION MODE for the 1000 requests test
+    workers = [GPUWorker(i, simulation_mode=True) for i in range(4)]
     master = Scheduler(workers)
-
-    # 3. Connect LB → Master (IMPORTANT: your LB already expects this)
     lb = LoadBalancer(master)
 
-    # 4. Simulate requests
-    for i in range(10):
-        req = Request(i, f"Query {i}")
+    print("--- STARTING 1000 CONCURRENT REQUESTS TEST ---")
+    start_time = time.time()
+    
+    threads = []
+    for i in range(1000):
+        t = threading.Thread(target=simulate_user, args=(lb, i))
+        threads.append(t)
+        t.start()
+        
+    # Wait for all 1000 to finish
+    for t in threads:
+        t.join()
 
-        print("\n==============================")
-        response = lb.receive_request(req)
-
-        print(f"[CLIENT] Response: {response}")
-
+    total_time = time.time() - start_time
+    print(f"\n--- TEST COMPLETE ---")
+    print(f"Total time for 1000 requests: {total_time:.2f} seconds")
+    print(f"Throughput: {1000/total_time:.2f} requests per second")
 
 if __name__ == "__main__":
     main()
