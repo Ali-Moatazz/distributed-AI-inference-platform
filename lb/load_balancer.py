@@ -2,6 +2,9 @@ class LoadBalancer:
     def __init__(self, master_scheduler):
         self.master = master_scheduler
 
+    def handle_request(self, request):
+        return self.receive_request(request)
+
     def receive_request(self, request):
         # 1. Log incoming request
         print(f"[LB] Received request {request.id} from client")

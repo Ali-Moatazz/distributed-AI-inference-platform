@@ -1,7 +1,13 @@
 import time
 
+
 def run_llm(query, context):
-    # Simulate GPU inference delay
+    print(f"[LLM] Generating response for query: {query}")
+
+    # Simulate LLM/GPU inference delay
     time.sleep(0.2)
 
-    return f"LLM Answer to '{query}' using [{context}]"
+    return (
+        f"LLM Response: For the query '{query}', "
+        f"the system used this retrieved context: '{context}'."
+    )
