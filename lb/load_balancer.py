@@ -1,114 +1,122 @@
-import logging
+# lb/load_balancer.py
+# ---------------------------------------------------------------------------
+# LOAD BALANCER — a dumb data-plane router. Zero intelligence.
+#
+# Responsibilities:
+#   1. Receive a request from the client
+#   2. Ask Master for an Assignment — LB never picks a worker itself
+#   3. Forward the request to the assigned worker
+#   4. Return the response to the client
+#   5. Notify Master that the request is done (so Master can update load)
+#   6. Accept worker-status updates FROM Master (passive awareness only)
+#
+# RULES (from spec):
+#   - LB does NOT detect failures
+#   - LB does NOT track heartbeats
+#   - LB does NOT have scheduling logic
+#   - LB does NOT do retries
+#   - LB does NOT remove workers from the pool — that is Master's job
+#   - LB updates its internal list ONLY when Master tells it to
+# ---------------------------------------------------------------------------
 
-logger = logging.getLogger("LB")
+import logging
+import threading
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [LB] %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger("LoadBalancer")
 
 
 class LoadBalancer:
+    """
+    Dumb pass-through router.
+    All decisions come from Master. LB just moves data.
+    """
+
     def __init__(self, master_node, workers: dict):
         """
-        Load Balancer (DATA PLANE ONLY)
-
-        Responsibilities:
-        - Receive requests from clients
-        - Ask Master for worker assignment
-        - Dispatch request to assigned worker
-        - Return responses back to clients
-        - Receive worker-pool updates from Master
-
-        IMPORTANT:
-        - LB contains NO scheduling logic
-        - LB contains NO failure detection logic
-        - LB does NOT decide worker health
+        Parameters
+        ----------
+        master_node : MasterNode  — the ONLY decision-maker
+        workers     : dict { worker_id (int) -> GPUWorker instance }
         """
+        self._master  = master_node
+        self._workers = workers
 
-        self.master = master_node
-        self.workers = workers
+        # Passive awareness — updated ONLY by Master notifications
+        self._lock = threading.Lock()
+        self._active_ids: set = set(workers.keys())
 
-        # Pure synchronization copy from Master
-        self.active_workers = set(workers.keys())
+        logger.info(f"Ready. Worker pool: {sorted(workers.keys())}")
 
-        logger.info(f"[LB] Initialized with workers: {list(workers.keys())}")
+    # ====================================================================
+    # MAIN DISPATCH — called by clients
+    # ====================================================================
 
-    # =========================================================
-    # CLIENT ENTRY POINT
-    # =========================================================
     def dispatch(self, request):
         """
-        Request Flow:
-        Client → LB → Master → Worker → LB → Client
+        Full pipeline:
+          1. Ask Master for assignment (Master picks the worker)
+          2. Get the worker instance
+          3. Send the request to the worker
+          4. Tell Master the task is done
+          5. Return response to client
+
+        Returns a Response dict, or None if no workers are available.
         """
-
-        logger.info(f"[LB] Received request {request.id}")
-
-        # -------------------------------------------------
-        # Step 1: Ask Master for assignment
-        # -------------------------------------------------
-        assignment = self.master.assign(request)
-
+        # ── Step 1: Ask Master ───────────────────────────────────────────
+        assignment = self._master.assign(request)
         if assignment is None:
-            logger.error(f"[LB] No worker available for request {request.id}")
+            logger.error(
+                f"Request {request.id} dropped — Master returned no assignment"
+            )
             return None
 
         worker_id = assignment.worker_id
 
-        # -------------------------------------------------
-        # Step 2: Get worker instance
-        # -------------------------------------------------
-        worker = self.workers.get(worker_id)
-
+        # ── Step 2: Get worker ───────────────────────────────────────────
+        worker = self._workers.get(worker_id)
         if worker is None:
-            logger.error(f"[LB] Worker {worker_id} not found")
-            return None
-
-        logger.info(f"[LB] Dispatching request {request.id} → Worker {worker_id}")
-
-        # -------------------------------------------------
-        # Step 3: Execute request
-        # -------------------------------------------------
-        try:
-            response = worker.process(request)
-
-        except Exception as e:
-            # IMPORTANT:
-            # LB does NOT decide failure state.
-            # Master detects failure independently using heartbeat monitoring.
             logger.error(
-                f"[LB] Execution error on Worker {worker_id}: {e}"
+                f"Request {request.id} — worker {worker_id} not in registry"
             )
+            self._master.release(worker_id)
             return None
 
-        # -------------------------------------------------
-        # Step 4: Notify Master request completed
-        # -------------------------------------------------
-        self.master.release(worker_id, request.id)
+        # ── Step 3: Forward to worker ────────────────────────────────────
+        logger.info(f"Forwarding request {request.id} → Worker {worker_id}")
+        response = worker.process(request)
 
+        # ── Step 4: Notify Master task is complete ───────────────────────
+        self._master.release(worker_id, latency=response.latency)
+
+        # ── Step 5: Return to client ─────────────────────────────────────
         return response
 
-    # =========================================================
-    # CONTROL PLANE UPDATE (MASTER → LB)
-    # =========================================================
-    def update_active_workers(self, active_ids):
+    # ====================================================================
+    # MASTER NOTIFICATION — passive awareness update
+    # ====================================================================
+
+    def update_active_workers(self, active_ids: list):
         """
-        Master synchronizes active worker pool with LB.
-
-        LB does NOT decide worker health.
-        It only mirrors Master's view.
+        Called by Master when a worker fails or recovers.
+        LB updates its awareness list — it does NOT act on this itself.
+        Master already stopped assigning the failed worker; LB just logs.
         """
-
-        old_workers = self.active_workers.copy()
-
-        self.active_workers = set(active_ids)
-
-        removed = old_workers - self.active_workers
-        added = self.active_workers - old_workers
+        with self._lock:
+            old = self._active_ids.copy()
+            self._active_ids = set(active_ids)
+            removed = old - self._active_ids
+            added   = self._active_ids - old
 
         if removed:
-            logger.warning(f"[LB] Removed failed workers: {removed}")
-
+            logger.warning(
+                f"Notified by Master: workers removed from pool → {removed}"
+            )
         if added:
-            logger.info(f"[LB] Added recovered workers: {added}")
-
-        logger.info(
-            f"[LB] Active worker pool updated: "
-            f"{self.active_workers}"
-        )
+            logger.info(
+                f"Notified by Master: workers recovered into pool → {added}"
+            )
