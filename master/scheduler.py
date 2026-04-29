@@ -37,7 +37,7 @@ MONITOR_INTERVAL   = 1.0   # how often the monitor thread checks
 
 class MasterNode:
     def __init__(self, worker_ids: list):
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         
         # FIX: Only allow 2 workers to "process" at the exact same time.
         # This prevents 1,000 threads from crashing your CPU.
@@ -65,7 +65,9 @@ class MasterNode:
             chosen = active_sorted[self._rr_index % len(active_sorted)]
             self._rr_index += 1
             chosen.active_connections += 1
+            # Metrics
             self._metrics["total_requests"] += 1
+            self._metrics["worker_assignments"][chosen.id] += 1
             return Assignment(request=request, worker_id=chosen.id)
 
     def release(self, worker_id: int, latency: float = 0.0):
@@ -89,21 +91,34 @@ class MasterNode:
     def get_metrics(self) -> dict:
         """Return a snapshot of current system metrics."""
         with self._lock:
-            total = self._metrics["total_requests"]
-            avg_latency = (
-                self._metrics["total_latency"] / total if total > 0 else 0.0
-            )
-            return {
-                "total_requests":     total,
-                "failed_requests":    self._metrics["failed_requests"],
-                "average_latency_s":  round(avg_latency, 4),
-                "worker_assignments": dict(self._metrics["worker_assignments"]),
-                "active_pool_size": len(self.get_active_worker_ids()),
-                "worker_statuses":    {
-                    wid: w.status.value
-                    for wid, w in self._workers.items()
-                },
-            }
+         total = self._metrics["total_requests"]
+
+        avg_latency = (
+            self._metrics["total_latency"] / total
+            if total > 0 else 0.0
+        )
+
+        active_pool_size = sum(
+            1
+            for w in self._workers.values()
+            if w.status == WorkerStatus.ACTIVE
+        )
+
+        worker_statuses = {
+            wid: w.status.value
+            for wid, w in self._workers.items()
+        }
+
+        return {
+            "total_requests": total,
+            "failed_requests": self._metrics["failed_requests"],
+            "average_latency_s": round(avg_latency, 4),
+            "worker_assignments": dict(
+                self._metrics["worker_assignments"]
+            ),
+            "active_pool_size": active_pool_size,
+            "worker_statuses": worker_statuses,
+        }
 
     def set_load_balancer(self, lb):
         """Wire the LB in after construction (avoids circular imports)."""
