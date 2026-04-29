@@ -68,33 +68,48 @@ class LoadBalancer:
         Returns a Response dict, or None if no workers are available.
         """
         # ── Step 1: Ask Master ───────────────────────────────────────────
-        assignment = self._master.assign(request)
-        if assignment is None:
-            logger.error(
-                f"Request {request.id} dropped — Master returned no assignment"
-            )
-            return None
+        max_retries = 3
+        for attempt in range(max_retries): 
+            assignment = self._master.assign(request)
+            if assignment is None:
+                logger.error(
+                    f"Request {request.id} dropped — Master returned no assignment"
+                )
+                return None
 
-        worker_id = assignment.worker_id
+            worker_id = assignment.worker_id
 
-        # ── Step 2: Get worker ───────────────────────────────────────────
-        worker = self._workers.get(worker_id)
-        if worker is None:
-            logger.error(
-                f"Request {request.id} — worker {worker_id} not in registry"
-            )
-            self._master.release(worker_id)
-            return None
+            # ── Step 2: Get worker ───────────────────────────────────────────
+            worker = self._workers.get(worker_id)
+            if worker is None:
+                logger.error(
+                    f"Request {request.id} — worker {worker_id} not in registry"
+                )
+                self._master.release(worker_id)
+                return None
 
         # ── Step 3: Forward to worker ────────────────────────────────────
-        logger.info(f"Forwarding request {request.id} → Worker {worker_id}")
-        response = worker.process(request)
+            try:
+                logger.info(f"Forwarding request {request.id} → Worker {worker_id}")
+                response = worker.process(request)
 
-        # ── Step 4: Notify Master task is complete ───────────────────────
-        self._master.release(worker_id, latency=response.latency)
+                # ── Step 4: Notify Master task is complete ───────────────────────
+                self._master.release(worker_id, latency=response.latency)
 
-        # ── Step 5: Return to client ─────────────────────────────────────
-        return response
+                # ── Step 5: Return to client ─────────────────────────────────────
+                return response
+            except Exception as e:
+                # 4. FAILURE: The worker crashed during the task!
+                logger.warning(f"Worker {worker_id} FAILED during Request {request.id}. Reassigning...")
+                
+                # Notify master of the failure (so it can mark worker FAILED)
+                # We release the semaphore slot but pass 0 latency
+                self._master.release(worker_id, failed=True) 
+                
+                # The loop continues to 'attempt + 1' and gets a NEW worker from Master
+                continue
+        logger.error(f"Request {request.id} failed after {max_retries} attempts.")
+        return None    
 
     # ====================================================================
     # MASTER NOTIFICATION — passive awareness update

@@ -66,13 +66,22 @@ class GPUWorker:
           2. LLM: run inference with context
           3. Return a Response with timing info
         """
+
+        if not self._alive:
+            self._logger.error(f"Worker {self.id} received request while DOWN!")
+            raise RuntimeError("Node is unreachable") 
+        
         start = time.time()
         self._logger.info(f"Processing request {request.id}")
 
         # RAG step
+        self._logger.info(f"Step 1: Starting RAG (Supabase) for Request {request.id}")
         context = retrieve_context(request.query)
+        self._logger.info(f"Step 1: RAG Complete for Request {request.id}")
+
 
         # LLM inference step
+        self._logger.info(f"Step 2: Queuing for LLM Brain - Request {request.id}") 
         result = run_llm(request.query, context)
 
         latency = time.time() - start

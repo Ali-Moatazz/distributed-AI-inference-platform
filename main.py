@@ -99,7 +99,7 @@ def main():
     # After the demo, you can run the massive load test.
     # Note: If you use Real AI for 100 users, it will take ~5-10 minutes.
     logger.info(">>> STARTING CONCURRENT LOAD TEST")
-    run_load_test(lb, num_users=20) # Start with 20 to be safe
+    run_load_test(lb, num_users=50) # Start with 20 to be safe
     print("\n[Main] Load test finished. Cooling down for 2s...")
     time.sleep(2) 
 
