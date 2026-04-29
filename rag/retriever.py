@@ -1,11 +1,15 @@
 # rag/retriever.py
+import os
 from supabase import create_client, Client
 import logging
 import string
+from dotenv import load_dotenv
 
-SUPABASE_URL = "https://hiizomzqwczdnfgqgxsh.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhpaXpvbXpxd2N6ZG5mZ3FneHNoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc0MDk5MTAsImV4cCI6MjA5Mjk4NTkxMH0.fLs1nUEsp86pOHUJ6WJ6cvrbpBDPg_kimm5er8S3plM"
+load_dotenv() 
 
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 logger = logging.getLogger("RAG")
 
 try:
