@@ -93,3 +93,12 @@ Real GPU cluster deployment
 Kafka-based message queue
 Prometheus + Grafana monitoring
 Auto-scaling workers
+
+
+Steps for AI Llama:
+ 1. install from https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf?download=true
+ 2. put the file downloaded in the folder containing the main.py
+ 3. rename it to Model.gguf
+ 4. run pip install llama-cpp-python
+ 5. (if failure of 3): run pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu 
+ 

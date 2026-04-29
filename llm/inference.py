@@ -1,5 +1,8 @@
 from llama_cpp import Llama
 import os
+import threading
+
+llm_lock = threading.Lock() 
 
 # Find the model file in the main folder
 current_dir = os.path.dirname(__file__)
@@ -15,13 +18,14 @@ def run_llm(query, context):
     print(f"[LLM] Locally processing: {query[:30]}...")
     
     # Prompt format for Llama-3.2
-    prompt = f"Context: {context}\nQuestion: {query}\nAnswer:"
-    
-    output = llm(
-        prompt, 
-        max_tokens=100, 
-        stop=["Question:", "\n"], 
-        echo=False
-    )
-    
-    return output["choices"][0]["text"].strip()
+    with llm_lock: 
+        prompt = f"Context: {context}\nQuestion: {query}\nAnswer:"
+        
+        output = llm(
+            prompt, 
+            max_tokens=100, 
+            stop=["Question:", "\n"], 
+            echo=False
+        )
+        
+        return output["choices"][0]["text"].strip()
