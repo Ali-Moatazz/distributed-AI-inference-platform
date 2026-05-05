@@ -50,6 +50,9 @@ class LoadBalancer:
         self._lock = threading.Lock()
         self._active_ids: set = set(workers.keys())
 
+        self._cache = {} 
+        self._cache_lock = threading.Lock()
+
         logger.info(f"Ready. Worker pool: {sorted(workers.keys())}")
 
     # ====================================================================
@@ -67,7 +70,16 @@ class LoadBalancer:
 
         Returns a Response dict, or None if no workers are available.
         """
-        # ── Step 1: Ask Master ───────────────────────────────────────────
+
+       # ── Step 1: check cache first ───────────────────────────────────────────
+        with self._cache_lock:
+            if request.query in self._cache:
+                logger.info(f"[CACHE] Hit for query: '{request.query[:20]}...'")
+                cached_response = self._cache[request.query]
+                # Update the ID so it matches the current request
+                cached_response.id = request.id 
+                return cached_response
+        # ── Step 2: Ask Master ───────────────────────────────────────────
         max_retries = 3
         for attempt in range(max_retries): 
             assignment = self._master.assign(request)
@@ -79,7 +91,7 @@ class LoadBalancer:
 
             worker_id = assignment.worker_id
 
-            # ── Step 2: Get worker ───────────────────────────────────────────
+            # ── Step 3: Get worker ───────────────────────────────────────────
             worker = self._workers.get(worker_id)
             if worker is None:
                 logger.error(
@@ -88,10 +100,13 @@ class LoadBalancer:
                 self._master.release(worker_id)
                 return None
 
-        # ── Step 3: Forward to worker ────────────────────────────────────
+        # ── Step 4: Forward to worker ────────────────────────────────────
             try:
+
                 logger.info(f"Forwarding request {request.id} → Worker {worker_id}")
                 response = worker.process(request)
+                with self._cache_lock:
+                    self._cache[request.query] = response
 
                 # ── Step 4: Notify Master task is complete ───────────────────────
                 self._master.release(worker_id, latency=response.latency)

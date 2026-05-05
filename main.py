@@ -10,6 +10,8 @@
 #   5. Wire Master → Workers (so workers can send heartbeats)
 # ---------------------------------------------------------------------------
 
+from dotenv import load_dotenv
+load_dotenv()
 import sys
 import time
 import threading
@@ -74,11 +76,10 @@ def main():
     from common.models import Request
     
     demo_questions = [
-        "What is load balancing in this system?",
+        "What is load balancing?",
+        "What is load balancing?", # REPEAT: This should be instant!
         "How do we handle fault tolerance?",
-        "What is a distributed AI cluster?",
-        "Tell me about RAG.",
-        "Describe the Role of AI in our life"
+        "How do we handle fault tolerance?" # REPEAT: This should be instant!
     ]
 
     for i, q_text in enumerate(demo_questions):
