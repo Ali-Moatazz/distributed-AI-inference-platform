@@ -77,9 +77,9 @@ def main():
     
     demo_questions = [
         "What is load balancing?",
-        "What is load balancing?", # REPEAT: This should be instant!
+        "Load balancing, please explain.", # This should now be a CACHE HIT
         "How do we handle fault tolerance?",
-        "How do we handle fault tolerance?" # REPEAT: This should be instant!
+        "Tell me about fault tolerance."   # This should now be a CACHE HIT
     ]
 
     for i, q_text in enumerate(demo_questions):

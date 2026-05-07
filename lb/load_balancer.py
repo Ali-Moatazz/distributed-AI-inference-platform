@@ -19,7 +19,9 @@
 #   - LB updates its internal list ONLY when Master tells it to
 # ---------------------------------------------------------------------------
 
+from copy import copy
 import logging
+import string
 import threading
 
 logging.basicConfig(
@@ -38,92 +40,104 @@ class LoadBalancer:
 
     def __init__(self, master_node, workers: dict):
         """
-        Parameters
-        ----------
-        master_node : MasterNode  — the ONLY decision-maker
-        workers     : dict { worker_id (int) -> GPUWorker instance }
+        master_node : MasterNode instance
+        workers     : dict { worker_id -> GPUWorker instance }
         """
         self._master  = master_node
         self._workers = workers
 
-        # Passive awareness — updated ONLY by Master notifications
+        # Passive awareness of cluster state
         self._lock = threading.Lock()
         self._active_ids: set = set(workers.keys())
 
+        # Thread-safe Cache
         self._cache = {} 
         self._cache_lock = threading.Lock()
+        
+        # Words to strip to find the "Meaning" of the question
+        self._stop_words = {
+            'what', 'is', 'how', 'the', 'tell', 'me', 'about', 'explain', 
+            'describe', 'please', 'a', 'an', 'are', 'do', 'we', 'in', 'this'
+        }
 
         logger.info(f"Ready. Worker pool: {sorted(workers.keys())}")
 
-    # ====================================================================
-    # MAIN DISPATCH — called by clients
-    # ====================================================================
+    def _generate_cache_key(self, query: str) -> str:
+        """
+        Normalizes query: 'What is load balancing?' -> 'balancing,load'
+        Ensures same meaning results in same cache key.
+        """
+        # 1. Lowercase and remove punctuation
+        clean = query.lower().translate(str.maketrans('', '', string.punctuation))
+        
+        # 2. Filter out noise words, keep only significant keywords
+        words = [w for w in clean.split() if w not in self._stop_words and len(w) > 2]
+        
+        # 3. Sort alphabetically so word order doesn't matter
+        words.sort()
+        
+        # 4. Join as key
+        return ",".join(words)
 
     def dispatch(self, request):
         """
-        Full pipeline:
-          1. Ask Master for assignment (Master picks the worker)
-          2. Get the worker instance
-          3. Send the request to the worker
-          4. Tell Master the task is done
-          5. Return response to client
-
-        Returns a Response dict, or None if no workers are available.
+        The main pipeline with Caching and Automatic Reassignment.
         """
-
-       # ── Step 1: check cache first ───────────────────────────────────────────
+        # ── Step 1: Semantic Cache Lookup ───────────────────────────────────
+        cache_key = self._generate_cache_key(request.query)
+        
         with self._cache_lock:
-            if request.query in self._cache:
-                logger.info(f"[CACHE] Hit for query: '{request.query[:20]}...'")
-                cached_response = self._cache[request.query]
-                # Update the ID so it matches the current request
-                cached_response.id = request.id 
-                return cached_response
-        # ── Step 2: Ask Master ───────────────────────────────────────────
+            if cache_key in self._cache:
+                logger.info(f"[CACHE] Hit for key '{cache_key}' (Query: '{request.query}')")
+                cached_resp = self._cache[cache_key]
+                
+                # Clone the response so we can update the ID for this specific user
+                final_response = copy(cached_resp)
+                final_response.id = request.id
+                return final_response
+
+        # ── Step 2: Request Distribution with Retry Logic ───────────────────
         max_retries = 3
+        
         for attempt in range(max_retries): 
+            # Ask Master for an active worker
             assignment = self._master.assign(request)
             if assignment is None:
-                logger.error(
-                    f"Request {request.id} dropped — Master returned no assignment"
-                )
+                logger.error(f"Request {request.id} dropped — No workers available")
                 return None
 
             worker_id = assignment.worker_id
-
-            # ── Step 3: Get worker ───────────────────────────────────────────
             worker = self._workers.get(worker_id)
+
             if worker is None:
-                logger.error(
-                    f"Request {request.id} — worker {worker_id} not in registry"
-                )
                 self._master.release(worker_id)
-                return None
+                continue
 
-        # ── Step 4: Forward to worker ────────────────────────────────────
             try:
-
-                logger.info(f"Forwarding request {request.id} → Worker {worker_id}")
-                response = worker.process(request)
-                with self._cache_lock:
-                    self._cache[request.query] = response
-
-                # ── Step 4: Notify Master task is complete ───────────────────────
-                self._master.release(worker_id, latency=response.latency)
-
-                # ── Step 5: Return to client ─────────────────────────────────────
-                return response
-            except Exception as e:
-                # 4. FAILURE: The worker crashed during the task!
-                logger.warning(f"Worker {worker_id} FAILED during Request {request.id}. Reassigning...")
+                logger.info(f"Forwarding request {request.id} → Worker {worker_id} (Attempt {attempt+1})")
                 
-                # Notify master of the failure (so it can mark worker FAILED)
-                # We release the semaphore slot but pass 0 latency
+                # ACTUAL EXECUTION
+                response = worker.process(request)
+
+                # ── Step 3: Success - Cache the result ────────────────────────
+                with self._cache_lock:
+                    self._cache[cache_key] = response
+
+                # Notify Master of completion
+                self._master.release(worker_id, latency=response.latency)
+                return response
+
+            except Exception as e:
+                # ── Step 4: Failure - Auto Reassignment ───────────────────────
+                logger.warning(f"!!! Worker {worker_id} FAILED during Request {request.id}. Error: {e}")
+                
+                # Force mark as FAILED in Master immediately
                 self._master.release(worker_id, failed=True) 
                 
-                # The loop continues to 'attempt + 1' and gets a NEW worker from Master
+                # Loop will retry and get a NEW worker from Master
                 continue
-        logger.error(f"Request {request.id} failed after {max_retries} attempts.")
+
+        logger.error(f"Request {request.id} failed completely after {max_retries} attempts.")
         return None    
 
     # ====================================================================
@@ -131,11 +145,7 @@ class LoadBalancer:
     # ====================================================================
 
     def update_active_workers(self, active_ids: list):
-        """
-        Called by Master when a worker fails or recovers.
-        LB updates its awareness list — it does NOT act on this itself.
-        Master already stopped assigning the failed worker; LB just logs.
-        """
+        """Called by Master to update LB's passive awareness."""
         with self._lock:
             old = self._active_ids.copy()
             self._active_ids = set(active_ids)
@@ -143,10 +153,6 @@ class LoadBalancer:
             added   = self._active_ids - old
 
         if removed:
-            logger.warning(
-                f"Notified by Master: workers removed from pool → {removed}"
-            )
+            logger.warning(f"Master Alert: Workers disconnected -> {removed}")
         if added:
-            logger.info(
-                f"Notified by Master: workers recovered into pool → {added}"
-            )
+            logger.info(f"Master Alert: Workers recovered -> {added}")
