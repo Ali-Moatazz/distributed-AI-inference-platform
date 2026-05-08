@@ -28,7 +28,8 @@ class MasterNode:
         self._rr_index = 0
         self._lb = None
         self._metrics = {
-            "total_requests": 0, 
+            "total_unique_requests": 0,
+            "total_assignments": 0, 
             "failed_requests": 0, 
             "total_latency": 0.0, 
             "worker_assignments": {wid: 0 for wid in worker_ids}
@@ -38,6 +39,11 @@ class MasterNode:
         # Start background monitor threads
         threading.Thread(target=self._performance_monitor, daemon=True, name="PerfMonitor").start()
         threading.Thread(target=self._heartbeat_monitor, daemon=True, name="HeartbeatMonitor").start()
+
+    def log_unique_request(self):
+        """Called exactly once per client dispatch."""
+        with self._lock:
+            self._metrics["total_unique_requests"] += 1    
 
     def assign(self, request: Request):
         # 1. Wait for a spot in the 'Waiting Room' (The Semaphore)
@@ -56,8 +62,8 @@ class MasterNode:
             chosen.active_connections += 1
             
             # Update Metrics
-            self._metrics["total_requests"] += 1
-            self._metrics["worker_assignments"][chosen.id] += 1
+            self._metrics["total_assignments"] += 1 
+            #self._metrics["worker_assignments"][chosen.id] += 1
             
             return Assignment(request=request, worker_id=chosen.id)
 
@@ -74,10 +80,11 @@ class MasterNode:
                 if failed:
                     w.status = WorkerStatus.FAILED
                     self._metrics["failed_requests"] += 1
-                    logger.warning(f"Worker {worker_id} marked FAILED via Load Balancer report.")
+                    logger.warning(f"Worker {worker_id} marked FAILED. Task will be reassigned.")
                     self._notify_lb()
                 else:
                     self._metrics["total_latency"] += latency
+                    self._metrics["worker_assignments"][worker_id] += 1
         
         # 2. Release the gate so the NEXT user can enter the pipeline
         self.execution_gate.release()
@@ -91,21 +98,18 @@ class MasterNode:
             )
 
     def get_metrics(self) -> dict:
-        """Return a snapshot of current system metrics."""
         with self._lock:
-            total = self._metrics["total_requests"]
+            # Note: We use unique_requests for the denominator to get the 'User Average'
+            total = self._metrics["total_unique_requests"]
             avg_latency = (self._metrics["total_latency"] / total if total > 0 else 0.0)
             
-            active_pool_size = sum(1 for w in self._workers.values() if w.status == WorkerStatus.ACTIVE)
-            worker_statuses = {wid: w.status.value for wid, w in self._workers.items()}
-
             return {
-                "total_requests": total,
-                "failed_requests": self._metrics["failed_requests"],
-                "average_latency_s": round(avg_latency, 4),
+                "total_users_served": total,
+                "total_tasks_run": self._metrics["total_assignments"],
+                "failed_nodes_detected": self._metrics["failed_requests"],
+                "average_user_latency_s": round(avg_latency, 4),
                 "worker_assignments": dict(self._metrics["worker_assignments"]),
-                "active_pool_size": active_pool_size,
-                "worker_statuses": worker_statuses,
+                "worker_statuses": {wid: w.status.value for wid, w in self._workers.items()},
             }
 
     def set_load_balancer(self, lb):
@@ -113,20 +117,20 @@ class MasterNode:
 
     def record_heartbeat(self, worker_id: int):
         now = time.time()
-        recovered = False
+        #recovered = False
         with self._lock:
             if worker_id not in self._workers:
                 return
             w = self._workers[worker_id]
             w.last_heartbeat = now
-            if w.status == WorkerStatus.FAILED:
-                w.status = WorkerStatus.ACTIVE
-                w.active_connections = 0
-                recovered = True
+            #if w.status == WorkerStatus.FAILED:
+             #   w.status = WorkerStatus.ACTIVE
+              #  w.active_connections = 0
+               # recovered = True
 
-        if recovered:
-            logger.info(f"Worker {worker_id} RECOVERED — back in active pool")
-            self._notify_lb()
+        #if recovered:
+         #   logger.info(f"Worker {worker_id} RECOVERED — back in active pool")
+          #  self._notify_lb()
 
     def _heartbeat_monitor(self):
         while True:
@@ -157,7 +161,7 @@ class MasterNode:
             time.sleep(5)
             with self._lock:
                 active_ids = self.get_active_worker_ids()
-                total_reqs = self._metrics["total_requests"]
+                total_reqs = self._metrics["total_unique_requests"]
                 elapsed = time.time() - self.start_time
                 throughput = total_reqs / elapsed if elapsed > 0 else 0
                 

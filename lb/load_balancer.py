@@ -80,65 +80,44 @@ class LoadBalancer:
         return ",".join(words)
 
     def dispatch(self, request):
-        """
-        The main pipeline with Caching and Automatic Reassignment.
-        """
-        # ── Step 1: Semantic Cache Lookup ───────────────────────────────────
+        # ──  Count the unique user intent  ──
+        self._master.log_unique_request()
+
+        # 1. Semantic Cache Lookup
         cache_key = self._generate_cache_key(request.query)
-        
         with self._cache_lock:
             if cache_key in self._cache:
-                logger.info(f"[CACHE] Hit for key '{cache_key}' (Query: '{request.query}')")
-                cached_resp = self._cache[cache_key]
-                
-                # Clone the response so we can update the ID for this specific user
-                final_response = copy(cached_resp)
-                final_response.id = request.id
-                return final_response
+                logger.info(f"[CACHE] Hit for query: {request.query}")
+                cached_resp = copy(self._cache[cache_key])
+                cached_resp.id = request.id
+                # Note: No master.release() needed because it never called assign()
+                return cached_resp
 
-        # ── Step 2: Request Distribution with Retry Logic ───────────────────
+        # 2. Request Distribution with Retry Logic
         max_retries = 3
-        
-        for attempt in range(max_retries): 
-            # Ask Master for an active worker
+        for attempt in range(max_retries):
             assignment = self._master.assign(request)
-            if assignment is None:
-                logger.error(f"Request {request.id} dropped — No workers available")
-                return None
+            if assignment is None: return None
 
             worker_id = assignment.worker_id
             worker = self._workers.get(worker_id)
 
-            if worker is None:
-                self._master.release(worker_id)
-                continue
-
             try:
-                logger.info(f"Forwarding request {request.id} → Worker {worker_id} (Attempt {attempt+1})")
-                
-                # ACTUAL EXECUTION
                 response = worker.process(request)
-
-                # ── Step 3: Success - Cache the result ────────────────────────
                 with self._cache_lock:
                     self._cache[cache_key] = response
-
-                # Notify Master of completion
+                
+                # Success: Release the worker and record latency
                 self._master.release(worker_id, latency=response.latency)
                 return response
 
             except Exception as e:
-                # ── Step 4: Failure - Auto Reassignment ───────────────────────
-                logger.warning(f"!!! Worker {worker_id} FAILED during Request {request.id}. Error: {e}")
-                
-                # Force mark as FAILED in Master immediately
+                logger.warning(f"Reassigning Request {request.id}...")
+                # Notify Master of failure
                 self._master.release(worker_id, failed=True) 
-                
-                # Loop will retry and get a NEW worker from Master
+            
                 continue
-
-        logger.error(f"Request {request.id} failed completely after {max_retries} attempts.")
-        return None    
+        return None 
 
     # ====================================================================
     # MASTER NOTIFICATION — passive awareness update
