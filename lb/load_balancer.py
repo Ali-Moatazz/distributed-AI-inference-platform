@@ -19,7 +19,9 @@
 #   - LB updates its internal list ONLY when Master tells it to
 # ---------------------------------------------------------------------------
 
+from copy import copy
 import logging
+import string
 import threading
 
 logging.basicConfig(
@@ -38,74 +40,91 @@ class LoadBalancer:
 
     def __init__(self, master_node, workers: dict):
         """
-        Parameters
-        ----------
-        master_node : MasterNode  — the ONLY decision-maker
-        workers     : dict { worker_id (int) -> GPUWorker instance }
+        master_node : MasterNode instance
+        workers     : dict { worker_id -> GPUWorker instance }
         """
         self._master  = master_node
         self._workers = workers
 
-        # Passive awareness — updated ONLY by Master notifications
+        # Passive awareness of cluster state
         self._lock = threading.Lock()
         self._active_ids: set = set(workers.keys())
 
+        # Thread-safe Cache
+        self._cache = {} 
+        self._cache_lock = threading.Lock()
+        
+        # Words to strip to find the "Meaning" of the question
+        self._stop_words = {
+            'what', 'is', 'how', 'the', 'tell', 'me', 'about', 'explain', 
+            'describe', 'please', 'a', 'an', 'are', 'do', 'we', 'in', 'this'
+        }
+
         logger.info(f"Ready. Worker pool: {sorted(workers.keys())}")
 
-    # ====================================================================
-    # MAIN DISPATCH — called by clients
-    # ====================================================================
+    def _generate_cache_key(self, query: str) -> str:
+        """
+        Normalizes query: 'What is load balancing?' -> 'balancing,load'
+        Ensures same meaning results in same cache key.
+        """
+        # 1. Lowercase and remove punctuation
+        clean = query.lower().translate(str.maketrans('', '', string.punctuation))
+        
+        # 2. Filter out noise words, keep only significant keywords
+        words = [w for w in clean.split() if w not in self._stop_words and len(w) > 2]
+        
+        # 3. Sort alphabetically so word order doesn't matter
+        words.sort()
+        
+        # 4. Join as key
+        return ",".join(words)
 
     def dispatch(self, request):
-        """
-        Full pipeline:
-          1. Ask Master for assignment (Master picks the worker)
-          2. Get the worker instance
-          3. Send the request to the worker
-          4. Tell Master the task is done
-          5. Return response to client
+        # ──  Count the unique user intent  ──
+        self._master.log_unique_request()
 
-        Returns a Response dict, or None if no workers are available.
-        """
-        # ── Step 1: Ask Master ───────────────────────────────────────────
-        assignment = self._master.assign(request)
-        if assignment is None:
-            logger.error(
-                f"Request {request.id} dropped — Master returned no assignment"
-            )
-            return None
+        # 1. Semantic Cache Lookup
+        cache_key = self._generate_cache_key(request.query)
+        with self._cache_lock:
+            if cache_key in self._cache:
+                logger.info(f"[CACHE] Hit for query: {request.query}")
+                cached_resp = copy(self._cache[cache_key])
+                cached_resp.id = request.id
+                # Note: No master.release() needed because it never called assign()
+                return cached_resp
 
-        worker_id = assignment.worker_id
+        # 2. Request Distribution with Retry Logic
+        max_retries = 3
+        for attempt in range(max_retries):
+            assignment = self._master.assign(request)
+            if assignment is None: return None
 
-        # ── Step 2: Get worker ───────────────────────────────────────────
-        worker = self._workers.get(worker_id)
-        if worker is None:
-            logger.error(
-                f"Request {request.id} — worker {worker_id} not in registry"
-            )
-            self._master.release(worker_id)
-            return None
+            worker_id = assignment.worker_id
+            worker = self._workers.get(worker_id)
 
-        # ── Step 3: Forward to worker ────────────────────────────────────
-        logger.info(f"Forwarding request {request.id} → Worker {worker_id}")
-        response = worker.process(request)
+            try:
+                response = worker.process(request)
+                with self._cache_lock:
+                    self._cache[cache_key] = response
+                
+                # Success: Release the worker and record latency
+                self._master.release(worker_id, latency=response.latency)
+                return response
 
-        # ── Step 4: Notify Master task is complete ───────────────────────
-        self._master.release(worker_id, latency=response.latency)
-
-        # ── Step 5: Return to client ─────────────────────────────────────
-        return response
+            except Exception as e:
+                logger.warning(f"Reassigning Request {request.id}...")
+                # Notify Master of failure
+                self._master.release(worker_id, failed=True) 
+            
+                continue
+        return None 
 
     # ====================================================================
     # MASTER NOTIFICATION — passive awareness update
     # ====================================================================
 
     def update_active_workers(self, active_ids: list):
-        """
-        Called by Master when a worker fails or recovers.
-        LB updates its awareness list — it does NOT act on this itself.
-        Master already stopped assigning the failed worker; LB just logs.
-        """
+        """Called by Master to update LB's passive awareness."""
         with self._lock:
             old = self._active_ids.copy()
             self._active_ids = set(active_ids)
@@ -113,10 +132,6 @@ class LoadBalancer:
             added   = self._active_ids - old
 
         if removed:
-            logger.warning(
-                f"Notified by Master: workers removed from pool → {removed}"
-            )
+            logger.warning(f"Master Alert: Workers disconnected -> {removed}")
         if added:
-            logger.info(
-                f"Notified by Master: workers recovered into pool → {added}"
-            )
+            logger.info(f"Master Alert: Workers recovered -> {added}")

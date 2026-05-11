@@ -16,11 +16,12 @@ llm = Llama(model_path=model_path, n_ctx=512, verbose=False)
 
 def run_llm(query, context):
     print(f"[LLM] Locally processing: {query[:30]}...")
+    prompt = f"Context: {context}\nQuestion: {query}\nAnswer:"
     
     # Prompt format for Llama-3.2
     with llm_lock: 
-        prompt = f"Context: {context}\nQuestion: {query}\nAnswer:"
         
+        print(f"--- [LLM] Worker is using the GPU Brain for Request ---")
         output = llm(
             prompt, 
             max_tokens=100, 

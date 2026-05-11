@@ -17,13 +17,15 @@
 import time
 import threading
 import logging
+import random
 from common.models import Request, Response
 from llm.inference import run_llm
 from rag.retriever import retrieve_context
 
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [Worker-{id}] %(message)s",
+    format="%(asctime)s %(name)s %(message)s",
     datefmt="%H:%M:%S",
 )
 
@@ -40,45 +42,48 @@ class GPUWorker:
     """
 
     def __init__(self, worker_id: int, master_node=None):
-        """
-        Parameters
-        ----------
-        worker_id   : unique integer identifier
-        master_node : MasterNode — used only for sending heartbeats.
-                      Can be set later via set_master().
-        """
         self.id       = worker_id
         self._master  = master_node
         self._alive   = True
         self._logger  = logging.getLogger(f"Worker-{worker_id}")
+        
+        # FIX 1: Initialize the counter
+        self._task_counter = 0 
 
         self._start_heartbeat_thread()
         self._logger.info(f"Worker {self.id} online")
 
-    # ====================================================================
-    # CORE EXECUTION
-    # ====================================================================
-
     def process(self, request: Request) -> Response:
-        """
-        Execute the full pipeline for a single request:
-          1. RAG: retrieve relevant context from knowledge base
-          2. LLM: run inference with context
-          3. Return a Response with timing info
-        """
+        if not self._alive:
+            raise RuntimeError("Node is unreachable") 
+        
         start = time.time()
         self._logger.info(f"Processing request {request.id}")
 
-        # RAG step
+        # Step 1: Starting RAG
+        self._logger.info(f"Step 1: Starting RAG for Request {request.id}")
         context = retrieve_context(request.query)
 
-        # LLM inference step
+        # --- RANDOM FAILURE SIMULATION ---
+        # Worker 1 will only fail after it has successfully finished 3 tasks
+        if self.id == 1 and self._alive:
+            if self._task_counter >= 3:
+                if random.random() < 0.30: # 30% chance to fail
+                    self._logger.error(f"!!! CRITICAL HARDWARE FAILURE !!! Worker 1 crashed mid-task")
+                    self._alive = False # Stops heartbeats
+                    raise RuntimeError("Random GPU Failure")
+        
+        self._logger.info(f"Step 1: RAG Complete for Request {request.id}")
+
+        # Step 2: LLM inference step
+        self._logger.info(f"Step 2: Processing LLM for Request {request.id}") 
         result = run_llm(request.query, context)
 
+        # FIX 2: Only increment counter after a SUCCESSFUL completion
+        self._task_counter += 1
+
         latency = time.time() - start
-        self._logger.info(
-            f"Finished request {request.id} in {latency:.3f}s"
-        )
+        self._logger.info(f"Finished request {request.id} in {latency:.3f}s")
 
         return Response(
             id=request.id,
