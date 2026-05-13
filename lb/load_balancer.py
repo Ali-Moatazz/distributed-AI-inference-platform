@@ -87,8 +87,10 @@ class LoadBalancer:
         cache_key = self._generate_cache_key(request.query)
         with self._cache_lock:
             if cache_key in self._cache:
+                self._master.log_cache_hit()
                 logger.info(f"[CACHE] Hit for query: {request.query}")
                 cached_resp = copy(self._cache[cache_key])
+                cached_resp.worker_id = "CACHE" 
                 cached_resp.id = request.id
                 # Note: No master.release() needed because it never called assign()
                 return cached_resp

@@ -58,15 +58,20 @@ def main():
         # Every 2nd and 3rd request is a repeat to trigger CACHE
         query_text = base_queries[i % len(base_queries)]
         
-        # Note: Worker 1 is programmed to fail mid-task during its 2nd job
-        # Since we use 4 workers, Worker 1 will get Request 1 and Request 5.
-        # Request 5 should trigger the 'Auto-Reassignment' logic.
+        # Note: Worker 1 is programmed to fail mid-task 
+       
         
         resp = lb.dispatch(Request(id=i, query=query_text))
         
         if i < 10: # Only print the first few to keep terminal clean
             if resp:
-                print(f"[User {i}] DONE | Worker: {resp.worker_id} | Latency: {resp.latency:.2f}s")
+                source = f"Worker {resp.worker_id}" if resp.worker_id != "CACHE" else "INTERNAL CACHE"
+                print(f"[User {i}] DONE | Source: {source} | Result: {resp.result[:50]}...")
+                print(f"\n[User {i}] ANSWER FROM WORKER {resp.worker_id}:")
+                print(f"Result: {resp.result}") 
+                print(f"Latency: {resp.latency:.2f}s")
+                print("-" * 30)
+              
         elif i == 10:
             print("... (Demo continuing silently) ...")
 
@@ -87,6 +92,7 @@ def main():
     print("█" * 60)
     print(f"  Total Unique Users Served:   {metrics['total_users_served']}")
     print(f"  Total Worker Tasks Run:      {metrics['total_tasks_run']}")
+    print(f"  Total Requests Cached:       {metrics['total_cache_hits']}")
     print(f"  Failed Nodes Detected:       {metrics['failed_nodes_detected']}")
     print(f"  Average System Latency:      {metrics['average_user_latency_s']}s")
     
