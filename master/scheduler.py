@@ -30,6 +30,7 @@ class MasterNode:
         self._metrics = {
             "total_unique_requests": 0,
             "total_assignments": 0, 
+            "total_cache_hits": 0,
             "failed_requests": 0, 
             "total_latency": 0.0, 
             "worker_assignments": {wid: 0 for wid in worker_ids}
@@ -39,6 +40,12 @@ class MasterNode:
         # Start background monitor threads
         threading.Thread(target=self._performance_monitor, daemon=True, name="PerfMonitor").start()
         threading.Thread(target=self._heartbeat_monitor, daemon=True, name="HeartbeatMonitor").start()
+
+
+    def log_cache_hit(self):
+        """LB calls this when it skips work via cache."""
+        with self._lock:
+            self._metrics["total_cache_hits"] += 1
 
     def log_unique_request(self):
         """Called exactly once per client dispatch."""
@@ -106,6 +113,7 @@ class MasterNode:
             return {
                 "total_users_served": total,
                 "total_tasks_run": self._metrics["total_assignments"],
+                "total_cache_hits": self._metrics["total_cache_hits"],
                 "failed_nodes_detected": self._metrics["failed_requests"],
                 "average_user_latency_s": round(avg_latency, 4),
                 "worker_assignments": dict(self._metrics["worker_assignments"]),

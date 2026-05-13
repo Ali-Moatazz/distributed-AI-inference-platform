@@ -20,7 +20,7 @@ logger = logging.getLogger("Client")
 
 def simulate_user(load_balancer, user_id: int):
     """A single user sends one request and logs the response."""
-    request = Request(id=user_id, query=f"Query {user_id}")
+    request = Request(id=user_id, query=f"Query TASKID{user_id}")
     response = load_balancer.dispatch(request)
 
     if response:

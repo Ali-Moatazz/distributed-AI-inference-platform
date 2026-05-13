@@ -1,0 +1,19 @@
+
+████████████████████████████████████████████████████████████
+             FINAL SYSTEM METRICS (1000 USERS)           
+████████████████████████████████████████████████████████████
+  Total Unique Users Served:   1000
+  Total Worker Tasks Run:      906
+  Total Requests Cached:       95
+  Failed Nodes Detected:       1
+  Average System Latency:      27.4993s
+
+  Node Distribution Stats:
+    - Worker 0: 299 tasks successfully handled (Status: active)
+    - Worker 1: 9 tasks successfully handled (Status: failed)
+    - Worker 2: 298 tasks successfully handled (Status: active)
+    - Worker 3: 299 tasks successfully handled (Status: active)
+------------------------------------------------------------
+  Total Wall-Clock Time:   1406.67 seconds
+  System Throughput:       0.71 users/sec
+████████████████████████████████████████████████████████████
